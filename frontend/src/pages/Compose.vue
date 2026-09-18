@@ -1,6 +1,10 @@
 <template>
     <transition name="slide-fade" appear>
-        <div>
+        <div
+            class="compose-page"
+            :class="{ 'stack-view-mode': !isAdd && !isEditMode && stack.isManagedByDockge }"
+            :style="composePageStyle"
+        >
             <h1 v-if="isAdd" class="mb-3">{{ $t("compose") }}</h1>
             <h1 v-else class="mb-3">
                 <Uptime :stack="globalStack" :pill="true" /> {{ stack.name }}
@@ -81,8 +85,8 @@
                 ></Terminal>
             </transition>
 
-            <div v-if="stack.isManagedByDockge" class="row">
-                <div class="col-lg-6">
+            <div v-if="stack.isManagedByDockge" class="row stack-content">
+                <div class="col-lg-6 containers-column">
                     <!-- General -->
                     <div v-if="isAdd">
                         <h4 class="mb-3">{{ $t("general") }}</h4>
@@ -121,15 +125,16 @@
                         </button>
                     </div>
 
-                    <div ref="containerList">
+                    <div ref="containerList" class="container-list">
                         <Container
-                            v-for="(service, name) in jsonConfig.services"
+                            v-for="name in displayServiceNames"
                             :key="name"
                             :name="name"
                             :is-edit-mode="isEditMode"
-                            :first="name === Object.keys(jsonConfig.services)[0]"
+                            :first="name === displayServiceNames[0]"
                             :serviceStatus="serviceStatusList[name]"
                             :dockerStats="dockerStats"
+                            :service-count="displayServiceNames.length"
                             @start-service="startService"
                             @stop-service="stopService"
                             @restart-service="restartService"
@@ -151,22 +156,8 @@
                             </div>
                         </div>
                     </div>
-
-                    <!-- Combined Terminal Output -->
-                    <div v-show="!isEditMode">
-                        <h4 class="mb-3">{{ $t("terminal") }}</h4>
-                        <Terminal
-                            ref="combinedTerminal"
-                            class="mb-3 terminal"
-                            :name="combinedTerminalName"
-                            :endpoint="endpoint"
-                            :rows="combinedTerminalRows"
-                            :cols="combinedTerminalCols"
-                            style="height: 315px;"
-                        ></Terminal>
-                    </div>
                 </div>
-                <div class="col-lg-6">
+                <div class="col-lg-6 compose-column">
                     <h4 class="mb-3">{{ stack.composeFileName }}</h4>
 
                     <!-- YAML editor -->
@@ -255,10 +246,7 @@ import { parseDocument, Document } from "yaml";
 
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import {
-    COMBINED_TERMINAL_COLS,
-    COMBINED_TERMINAL_ROWS,
     copyYAMLComments, envsubstYAML,
-    getCombinedTerminalName,
     getComposeTerminalName,
     PROGRESS_TERMINAL_ROWS,
     RUNNING
@@ -331,8 +319,6 @@ export default {
             processing: true,
             showProgressTerminal: false,
             progressTerminalRows: PROGRESS_TERMINAL_ROWS,
-            combinedTerminalRows: COMBINED_TERMINAL_ROWS,
-            combinedTerminalCols: COMBINED_TERMINAL_COLS,
             stack: {
 
             },
@@ -344,6 +330,7 @@ export default {
             newContainerName: "",
             stopServiceStatusTimeout: false,
             stopDockerStatsTimeout: false,
+            availablePageHeight: 0,
         };
     },
     computed: {
@@ -398,18 +385,22 @@ export default {
             return this.status === RUNNING;
         },
 
+        displayServiceNames() {
+            const configuredServices = Object.keys(this.jsonConfig.services || {});
+            if (this.isEditMode) {
+                return configuredServices;
+            }
+            return Array.from(new Set([
+                ...configuredServices,
+                ...Object.keys(this.serviceStatusList || {})
+            ])).sort((a, b) => a.localeCompare(b));
+        },
+
         terminalName() {
             if (!this.stack.name) {
                 return "";
             }
             return getComposeTerminalName(this.endpoint, this.stack.name);
-        },
-
-        combinedTerminalName() {
-            if (!this.stack.name) {
-                return "";
-            }
-            return getCombinedTerminalName(this.endpoint, this.stack.name);
         },
 
         networks() {
@@ -426,6 +417,15 @@ export default {
             } else {
                 return `/compose/${this.stack.name}`;
             }
+        },
+
+        composePageStyle() {
+            if (!this.availablePageHeight) {
+                return {};
+            }
+            return {
+                "--compose-page-height": `${this.availablePageHeight}px`,
+            };
         },
     },
     watch: {
@@ -473,6 +473,8 @@ export default {
         }
     },
     mounted() {
+        this.updateAvailableHeight();
+        window.addEventListener("resize", this.updateAvailableHeight);
         if (this.isAdd) {
             this.processing = false;
             this.isEditMode = true;
@@ -513,9 +515,23 @@ export default {
         this.requestDockerStats();
     },
     unmounted() {
-
+        window.removeEventListener("resize", this.updateAvailableHeight);
     },
     methods: {
+        /**
+         * Calculate the desktop viewport space available below the page's layout position.
+         */
+        updateAvailableHeight() {
+            let pageTop = 0;
+            let element = this.$el;
+            while (element) {
+                pageTop += element.offsetTop;
+                element = element.offsetParent;
+            }
+            pageTop -= window.scrollY;
+            this.availablePageHeight = Math.max(0, window.innerHeight - pageTop - 16);
+        },
+
         startServiceStatusTimeout() {
             clearTimeout(serviceStatusTimeout);
             serviceStatusTimeout = setTimeout(async () => {
@@ -578,9 +594,6 @@ export default {
             clearTimeout(serviceStatusTimeout);
             clearTimeout(dockerStatsTimeout);
 
-            // Leave Combined Terminal
-            console.debug("leaveCombinedTerminal", this.endpoint, this.stack.name);
-            this.$root.emitAgent(this.endpoint, "leaveCombinedTerminal", this.stack.name, () => {});
         },
 
         bindTerminal() {
@@ -861,5 +874,69 @@ export default {
 .agent-name {
     font-size: 13px;
     color: $dark-font-color3;
+}
+
+@media (min-width: 992px) {
+    .compose-page.stack-view-mode {
+        display: flex;
+        overflow: hidden;
+        flex-direction: column;
+        height: var(--compose-page-height, calc(100dvh - 7rem));
+        min-height: 0;
+    }
+
+    .stack-view-mode > .stack-content {
+        overflow: hidden;
+        flex: 1 1 0;
+        min-height: 0;
+    }
+
+    .stack-view-mode .containers-column,
+    .stack-view-mode .compose-column {
+        height: 100%;
+        min-height: 0;
+    }
+
+    .stack-view-mode .containers-column {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .stack-view-mode .container-list {
+        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
+        padding-right: 0.35rem;
+        overscroll-behavior: contain;
+        scrollbar-gutter: stable;
+    }
+
+    .stack-view-mode .compose-column {
+        display: flex;
+        overflow: hidden;
+        flex-direction: column;
+        overscroll-behavior: contain;
+    }
+
+    .stack-view-mode .compose-column > h4 {
+        flex: 0 0 auto;
+    }
+
+    .stack-view-mode .compose-column > .editor-box {
+        overflow: hidden;
+        flex: 1 1 auto;
+        min-height: 0;
+        margin-bottom: 0 !important;
+    }
+
+    .stack-view-mode .compose-column > .editor-box :deep(.vue-codemirror),
+    .stack-view-mode .compose-column > .editor-box :deep(.cm-editor) {
+        height: 100%;
+        min-height: 0;
+    }
+
+    .stack-view-mode .compose-column > .editor-box :deep(.cm-scroller) {
+        overflow: auto;
+    }
 }
 </style>

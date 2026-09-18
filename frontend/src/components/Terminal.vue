@@ -46,6 +46,16 @@ export default {
             default: "bash",
         },
 
+        containerName: {
+            type: String,
+            default: "",
+        },
+
+        autoFollow: {
+            type: Boolean,
+            default: false,
+        },
+
         rows: {
             type: Number,
             default: TERMINAL_ROWS,
@@ -59,18 +69,21 @@ export default {
         // Mode
         // displayOnly: Only display terminal output
         // mainTerminal: Allow input limited commands and output
-        // interactive: Free input and output
+        // interactive: Free input and output through Docker Compose
+        // interactiveContainer: Free input and output for one container instance
         mode: {
             type: String,
             default: "displayOnly",
         }
     },
-    emits: [ "has-data" ],
+    emits: [ "has-data", "ready", "follow-change", "selection-change" ],
     data() {
         return {
             first: true,
             terminalInputBuffer: "",
             cursorPosition: 0,
+            followOutput: this.autoFollow,
+            hasSelection: false,
         };
     },
     created() {
@@ -93,7 +106,7 @@ export default {
 
         if (this.mode === "mainTerminal") {
             this.mainTerminalConfig();
-        } else if (this.mode === "interactive") {
+        } else if (this.mode === "interactive" || this.mode === "interactiveContainer") {
             this.interactiveTerminalConfig();
         }
 
@@ -111,6 +124,18 @@ export default {
             this.handleSelection();
         });
 
+        this.terminal.onScroll((position) => {
+            if (this.followOutput && position < this.terminal.buffer.active.baseY) {
+                this.setFollow(false);
+            }
+        });
+
+        this.terminal.onWriteParsed(() => {
+            if (this.followOutput) {
+                this.terminal.scrollToBottom();
+            }
+        });
+
         // Notify parent component when data is received
         this.terminal.onCursorMove(() => {
             console.debug("onData triggered");
@@ -120,44 +145,61 @@ export default {
             }
         });
 
-        this.bind();
+        this.bind(undefined, undefined, () => {
+            this.$emit("ready");
 
-        // Create a new Terminal
-        if (this.mode === "mainTerminal") {
-            this.$root.emitAgent(this.endpoint, "mainTerminal", this.name, (res) => {
-                if (!res.ok) {
-                    this.$root.toastRes(res);
-                }
-            });
-        } else if (this.mode === "interactive") {
-            console.debug("Create Interactive terminal:", this.name);
-            this.$root.emitAgent(this.endpoint, "interactiveTerminal", this.stackName, this.serviceName, this.shell, (res) => {
-                if (!res.ok) {
-                    this.$root.toastRes(res);
-                }
-            });
-        }
+            // Create a new Terminal
+            if (this.mode === "mainTerminal") {
+                this.$root.emitAgent(this.endpoint, "mainTerminal", this.name, (res) => {
+                    if (!res.ok) {
+                        this.$root.toastRes(res);
+                    }
+                });
+            } else if (this.mode === "interactive") {
+                console.debug("Create Interactive terminal:", this.name);
+                this.$root.emitAgent(this.endpoint, "interactiveTerminal", this.stackName, this.serviceName, this.shell, (res) => {
+                    if (!res.ok) {
+                        this.$root.toastRes(res);
+                    } else {
+                        this.onResizeEvent();
+                    }
+                });
+            } else if (this.mode === "interactiveContainer") {
+                this.$root.emitAgent(this.endpoint, "interactiveContainerTerminal", this.stackName, this.containerName, this.shell, (res) => {
+                    if (!res.ok) {
+                        this.$root.toastRes(res);
+                    } else {
+                        this.onResizeEvent();
+                    }
+                });
+            }
+        });
         // Fit the terminal width to the div container size after terminal is created.
         this.updateTerminalSize();
     },
 
     unmounted() {
         window.removeEventListener("resize", this.onResizeEvent); // Remove the resize event listener from the window object.
+        if (this.mode === "interactive") {
+            this.$root.emitAgent(this.endpoint, "leaveInteractiveTerminal", this.stackName, this.serviceName, this.shell, () => {});
+        } else if (this.mode === "interactiveContainer") {
+            this.$root.emitAgent(this.endpoint, "leaveInteractiveContainerTerminal", this.stackName, this.containerName, this.shell, () => {});
+        }
         this.$root.unbindTerminal(this.name);
         this.terminal.dispose();
         this.$refs.terminal?.removeEventListener("contextmenu", this.handleContextMenu);
     },
 
     methods: {
-        bind(endpoint, name) {
+        bind(endpoint, name, callback) {
             // Workaround: normally this.name should be set, but it is not sometimes, so we use the parameter, but eventually this.name and name must be the same name
             if (name) {
                 this.$root.unbindTerminal(name);
-                this.$root.bindTerminal(endpoint, name, this.terminal);
+                this.$root.bindTerminal(endpoint, name, this.terminal, callback);
                 console.debug("Terminal bound via parameter: " + name);
             } else if (this.name) {
                 this.$root.unbindTerminal(this.name);
-                this.$root.bindTerminal(this.endpoint, this.name, this.terminal);
+                this.$root.bindTerminal(this.endpoint, this.name, this.terminal, callback);
                 console.debug("Terminal bound: " + this.name);
             } else {
                 console.debug("Terminal name not set");
@@ -198,9 +240,7 @@ export default {
                     // Remove the input from the terminal
                     this.removeInput();
 
-                    this.$root.emitAgent(this.endpoint, "terminalInput", this.name, buffer + e.key, (err) => {
-                        this.$root.toastError(err.msg);
-                    });
+                    this.sendTerminalInput(buffer + e.key);
                 } else if (e.key === "\u007F") {      // Backspace
                     if (this.cursorPosition > 0) {
                         // Remove character to the left of cursor
@@ -236,7 +276,7 @@ export default {
                     }
                 } else if (e.key === "\u0003") {      // Ctrl + C
                     console.debug("Ctrl + C");
-                    this.$root.emitAgent(this.endpoint, "terminalInput", this.name, e.key);
+                    this.sendTerminalInput(e.key);
                     this.removeInput();
                 } else if (e.key === "\u0016" || (e.domEvent?.ctrlKey && e.key.toLowerCase() === "v")) {      // Ctrl + V
                     this.handlePaste();
@@ -253,18 +293,29 @@ export default {
         },
 
         interactiveTerminalConfig() {
-            this.terminal.onKey(e => {
-                // Handle Ctrl+V for paste
-                if (e.key === "\u0016" || (e.domEvent?.ctrlKey && e.key.toLowerCase() === "v")) {
+            this.terminal.attachCustomKeyEventHandler(event => {
+                if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
                     this.handlePaste();
-                    return;
+                    return false;
                 }
+                return true;
+            });
 
-                this.$root.emitAgent(this.endpoint, "terminalInput", this.name, e.key, (res) => {
-                    if (!res.ok) {
-                        this.$root.toastRes(res);
-                    }
-                });
+            this.terminal.onData(data => {
+                this.sendTerminalInput(data);
+            });
+        },
+
+        /**
+         * Forward raw terminal input to the backing PTY.
+         *
+         * @param {string} input Raw data emitted by xterm
+         */
+        sendTerminalInput(input) {
+            this.$root.emitAgent(this.endpoint, "terminalInput", this.name, input, (res) => {
+                if (!res.ok) {
+                    this.$root.toastRes(res);
+                }
             });
         },
 
@@ -290,6 +341,31 @@ export default {
             let rows = this.terminal.rows;
             let cols = this.terminal.cols;
             this.$root.emitAgent(this.endpoint, "terminalResize", this.name, rows, cols);
+        },
+
+        fit() {
+            this.updateTerminalSize();
+        },
+
+        clear() {
+            this.terminal.clear();
+        },
+
+        setFollow(enabled) {
+            this.followOutput = enabled;
+            if (enabled) {
+                this.terminal.scrollToBottom();
+            }
+            this.$emit("follow-change", enabled);
+        },
+
+        async copySelection() {
+            const selectedText = this.terminal.getSelection();
+            if (!selectedText) {
+                return false;
+            }
+            await this.copyToClipboard(selectedText);
+            return true;
         },
 
         /**
@@ -327,13 +403,9 @@ export default {
                 const backspaces = "\b".repeat(afterCursor.length);
                 this.terminal.write(backspaces);
 
-            } else if (this.mode === "interactive") {
-                // For interactive terminal, send directly to server
-                this.$root.emitAgent(this.endpoint, "terminalInput", this.name, text, (res) => {
-                    if (!res.ok) {
-                        this.$root.toastRes(res);
-                    }
-                });
+            } else if (this.mode === "interactive" || this.mode === "interactiveContainer") {
+                // Let xterm encode bracketed paste mode before forwarding the raw data.
+                this.terminal.paste(text);
             }
         },
 
@@ -345,7 +417,7 @@ export default {
             event.preventDefault();
 
             // Only handle paste for modes that support input
-            if (this.mode === "mainTerminal" || this.mode === "interactive") {
+            if (this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer") {
                 this.handlePaste();
             }
         },
@@ -355,9 +427,8 @@ export default {
          */
         handleSelection() {
             const selectedText = this.terminal.getSelection();
-            if (selectedText && selectedText.length > 0) {
-                this.copyToClipboard(selectedText);
-            }
+            this.hasSelection = selectedText.length > 0;
+            this.$emit("selection-change", this.hasSelection);
         },
 
         /**

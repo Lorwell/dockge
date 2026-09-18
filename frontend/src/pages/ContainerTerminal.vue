@@ -37,7 +37,7 @@ export default {
             return this.$route.params.serviceName;
         },
         terminalName() {
-            return getContainerExecTerminalName(this.endpoint, this.stackName, this.serviceName, 0);
+            return getContainerExecTerminalName(this.endpoint, this.stackName, this.serviceName, 0, this.shell);
         },
         sh() {
             let endpoint = this.$route.params.endpoint;
