@@ -68,7 +68,7 @@ export default {
 
         // Mode
         // displayOnly: Only display terminal output
-        // mainTerminal: Allow input limited commands and output
+        // mainTerminal: Free input and output for the Dockge console
         // interactive: Free input and output through Docker Compose
         // interactiveContainer: Free input and output for one container instance
         mode: {
@@ -80,8 +80,6 @@ export default {
     data() {
         return {
             first: true,
-            terminalInputBuffer: "",
-            cursorPosition: 0,
             followOutput: this.autoFollow,
             hasSelection: false,
         };
@@ -104,9 +102,7 @@ export default {
             rows: this.rows,
         });
 
-        if (this.mode === "mainTerminal") {
-            this.mainTerminalConfig();
-        } else if (this.mode === "interactive" || this.mode === "interactiveContainer") {
+        if (this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer") {
             this.interactiveTerminalConfig();
         }
 
@@ -153,6 +149,8 @@ export default {
                 this.$root.emitAgent(this.endpoint, "mainTerminal", this.name, (res) => {
                     if (!res.ok) {
                         this.$root.toastRes(res);
+                    } else {
+                        this.onResizeEvent();
                     }
                 });
             } else if (this.mode === "interactive") {
@@ -204,92 +202,6 @@ export default {
             } else {
                 console.debug("Terminal name not set");
             }
-        },
-
-        removeInput() {
-            const textAfterCursorLength = this.terminalInputBuffer.length - this.cursorPosition;
-            const spaces = " ".repeat(textAfterCursorLength);
-            const backspaceCount = this.terminalInputBuffer.length;
-            const backspaces = "\b \b".repeat(backspaceCount);
-            this.cursorPosition = 0;
-            this.terminal.write(spaces + backspaces);
-            this.terminalInputBuffer = "";
-        },
-
-        clearCurrentLine() {
-            // Move cursor to the beginning of the input and clear it
-            const backspaces = "\b".repeat(this.cursorPosition);
-            const spaces = " ".repeat(this.terminalInputBuffer.length);
-            const moreBackspaces = "\b".repeat(this.terminalInputBuffer.length);
-            this.terminal.write(backspaces + spaces + moreBackspaces);
-        },
-
-        mainTerminalConfig() {
-            this.terminal.onKey(e => {
-                // Optional: keep for debugging
-                // console.debug("Encode: " + JSON.stringify(e.key));
-
-                if (e.key === "\r") {
-                    // Return if no input
-                    if (this.terminalInputBuffer.length === 0) {
-                        return;
-                    }
-
-                    const buffer = this.terminalInputBuffer;
-
-                    // Remove the input from the terminal
-                    this.removeInput();
-
-                    this.sendTerminalInput(buffer + e.key);
-                } else if (e.key === "\u007F") {      // Backspace
-                    if (this.cursorPosition > 0) {
-                        // Remove character to the left of cursor
-                        const beforeCursor = this.terminalInputBuffer.slice(0, this.cursorPosition - 1);
-                        const afterCursor = this.terminalInputBuffer.slice(this.cursorPosition);
-                        this.terminalInputBuffer = beforeCursor + afterCursor;
-                        this.cursorPosition--;
-
-                        // Redraw the line
-                        this.terminal.write("\b" + afterCursor + " \b".repeat(afterCursor.length + 1));
-                    }
-                } else if (e.key === "\u001B\u005B\u0033\u007E") { // Delete key
-                    if (this.cursorPosition < this.terminalInputBuffer.length) {
-                        // Remove character to the right of cursor
-                        const beforeCursor = this.terminalInputBuffer.slice(0, this.cursorPosition);
-                        const afterCursor = this.terminalInputBuffer.slice(this.cursorPosition + 1);
-                        this.terminalInputBuffer = beforeCursor + afterCursor;
-
-                        // Redraw the line from cursor position
-                        this.terminal.write(afterCursor + " \b".repeat(afterCursor.length + 1));
-                    }
-                } else if (e.key === "\u001B\u005B\u0041" || e.key === "\u001B\u005B\u0042") {      // UP OR DOWN
-                    // Do nothing
-                } else if (e.key === "\u001B\u005B\u0043") {      // RIGHT
-                    if (this.cursorPosition < this.terminalInputBuffer.length) {
-                        this.terminal.write(this.terminalInputBuffer[this.cursorPosition]);
-                        this.cursorPosition++;
-                    }
-                } else if (e.key === "\u001B\u005B\u0044") {      // LEFT
-                    if (this.cursorPosition > 0) {
-                        this.terminal.write("\b");
-                        this.cursorPosition--;
-                    }
-                } else if (e.key === "\u0003") {      // Ctrl + C
-                    console.debug("Ctrl + C");
-                    this.sendTerminalInput(e.key);
-                    this.removeInput();
-                } else if (e.key === "\u0016" || (e.domEvent?.ctrlKey && e.key.toLowerCase() === "v")) {      // Ctrl + V
-                    this.handlePaste();
-                } else if (e.key === "\u0009" || e.key.startsWith("\u001B")) {      // TAB or other special keys
-                    // Do nothing
-                } else {
-                    const textBeforeCursor = this.terminalInputBuffer.slice(0, this.cursorPosition);
-                    const textAfterCursor = this.terminalInputBuffer.slice(this.cursorPosition);
-                    this.terminalInputBuffer = textBeforeCursor + e.key + textAfterCursor;
-                    this.terminal.write(e.key + textAfterCursor + "\b".repeat(textAfterCursor.length));
-                    this.cursorPosition++;
-                }
-            });
         },
 
         interactiveTerminalConfig() {
@@ -386,24 +298,7 @@ export default {
          * Paste text into the terminal based on current mode
          */
         pasteText(text) {
-            if (this.mode === "mainTerminal") {
-                // For main terminal, insert text at current cursor position
-                const beforeCursor = this.terminalInputBuffer.slice(0, this.cursorPosition);
-                const afterCursor = this.terminalInputBuffer.slice(this.cursorPosition);
-
-                // Update the buffer with inserted text
-                this.terminalInputBuffer = beforeCursor + text + afterCursor;
-
-                // Clear the current line and rewrite it
-                this.clearCurrentLine();
-                this.terminal.write(this.terminalInputBuffer);
-
-                // Move cursor to the correct position (after the pasted text)
-                this.cursorPosition += text.length;
-                const backspaces = "\b".repeat(afterCursor.length);
-                this.terminal.write(backspaces);
-
-            } else if (this.mode === "interactive" || this.mode === "interactiveContainer") {
+            if (this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer") {
                 // Let xterm encode bracketed paste mode before forwarding the raw data.
                 this.terminal.paste(text);
             }
