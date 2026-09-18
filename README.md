@@ -4,7 +4,7 @@
 
 # Dockge — Lorwell Fork
 
-[![Version](https://img.shields.io/badge/version-1.5.0-green.svg)](./package.json)
+[![Version](https://img.shields.io/badge/version-1.6.0-green.svg)](./package.json)
 [![Docker pulls](https://img.shields.io/docker/pulls/moailaozi/dockge.svg)](https://hub.docker.com/r/moailaozi/dockge)
 [![Build Docker image](https://github.com/Lorwell/dockge/actions/workflows/docker-image.yml/badge.svg)](https://github.com/Lorwell/dockge/actions/workflows/docker-image.yml)
 
@@ -42,7 +42,7 @@ cd /opt/dockge
 ```yaml
 services:
   dockge:
-    image: docker.io/moailaozi/dockge:1.5.0
+    image: docker.io/moailaozi/dockge:1.6.0
     restart: unless-stopped
     ports:
       - "5001:5001"
@@ -64,7 +64,7 @@ Start Dockge:
 docker compose up -d
 ```
 
-Open <http://localhost:5001>. For production, pin a full version such as `1.5.0`; the `latest` tag follows the
+Open <http://localhost:5001>. For production, pin a full version such as `1.6.0`; the `latest` tag follows the
 newest stable release of this fork.
 
 ## Stack directory and imports
@@ -127,7 +127,7 @@ npm run build:frontend
 
 The `Build and push Docker image` GitHub Actions workflow publishes multi-platform images for `amd64`, `arm64`,
 and `arm/v7`. It can only publish stable images from `master`, and derives the release version from `package.json`.
-For version `1.5.0`, it publishes `1.5.0`, `1.5`, `1`, and `latest` tags.
+For version `1.6.0`, it publishes `1.6.0`, `1.6`, `1`, and `latest` tags.
 
 Configure these GitHub Actions secrets before running the workflow:
 
