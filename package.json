@@ -1,6 +1,6 @@
 {
     "name": "dockge",
-    "version": "1.6.0",
+    "version": "1.8.0",
     "type": "module",
     "engines": {
         "node": ">= 22.14.0"
@@ -9,6 +9,7 @@
         "fmt": "eslint \"**/*.{ts,vue}\" --fix",
         "lint": "eslint \"**/*.{ts,vue}\"",
         "check-ts": "tsc --noEmit",
+        "test:file-manager": "tsx --test backend/file-manager.test.ts",
         "start": "tsx ./backend/index.ts",
         "dev": "concurrently -k -r \"wait-on tcp:5000 && npm run dev:backend \" \"npm run dev:frontend\"",
         "dev:backend": "cross-env NODE_ENV=development tsx watch --inspect ./backend/index.ts",
@@ -27,6 +28,7 @@
         "reset-password": "tsx ./extra/reset-password.ts"
     },
     "dependencies": {
+        "@codemirror/language-data": "^6.5.2",
         "@homebridge/node-pty-prebuilt-multiarch": "0.11.14",
         "@inventage/envsubst": "^0.16.0",
         "@louislam/sqlite3": "~15.1.6",

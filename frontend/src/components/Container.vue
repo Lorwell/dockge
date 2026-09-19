@@ -417,6 +417,25 @@ export default defineComponent({
     }
 
     @media (max-width: 575.98px) {
+        > .row > [class*="col-"] {
+            width: 100%;
+        }
+
+        .function {
+            justify-content: flex-start;
+            margin-top: 0.75rem;
+        }
+
+        .function .btn-group {
+            display: flex;
+            flex-wrap: wrap;
+            width: 100%;
+        }
+
+        .function .btn {
+            flex: 1 1 auto;
+        }
+
         .instance-row {
             align-items: stretch;
             flex-direction: column;

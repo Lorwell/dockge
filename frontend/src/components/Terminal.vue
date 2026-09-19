@@ -1,5 +1,11 @@
 <template>
-    <div class="shadow-box">
+    <div class="terminal-shell shadow-box">
+        <div v-if="$root.isCompact && mode !== 'displayOnly'" class="terminal-touch-toolbar">
+            <button class="btn btn-sm btn-normal" @click="focus"><font-awesome-icon icon="terminal" /> {{ $t("focusTerminal") }}</button>
+            <button class="btn btn-sm btn-normal" @click="copySelection"><font-awesome-icon icon="copy" /> {{ $t("copySelection") }}</button>
+            <button class="btn btn-sm btn-normal" @click="handlePaste"><font-awesome-icon icon="paste" /> {{ $t("paste") }}</button>
+            <button class="btn btn-sm btn-normal" @click="clear"><font-awesome-icon icon="trash" /> {{ $t("clearDisplay") }}</button>
+        </div>
         <div v-pre ref="terminal" class="main-terminal"></div>
     </div>
 </template>
@@ -263,6 +269,10 @@ export default {
             this.terminal.clear();
         },
 
+        focus() {
+            this.terminal.focus();
+        },
+
         setFollow(enabled) {
             this.followOutput = enabled;
             if (enabled) {
@@ -343,7 +353,29 @@ export default {
 
 <style scoped lang="scss">
 .main-terminal {
+    min-height: 0;
     height: 100%;
+}
+
+.terminal-shell {
+    display: flex;
+    overflow: hidden;
+    flex-direction: column;
+}
+
+.terminal-touch-toolbar {
+    display: flex;
+    flex: 0 0 auto;
+    overflow-x: auto;
+    gap: 0.4rem;
+    padding: 0.5rem;
+    background: #161b22;
+}
+
+.terminal-touch-toolbar .btn {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding-inline: 0.75rem;
 }
 </style>
 

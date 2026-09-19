@@ -13,7 +13,7 @@
                 </span>
             </h1>
 
-            <div v-if="stack.isManagedByDockge" class="mb-3">
+            <div v-if="stack.isManagedByDockge" class="stack-actions mb-3">
                 <div class="btn-group me-2" role="group">
                     <button v-if="isEditMode" class="btn btn-primary" :disabled="processing" @click="deployStack">
                         <font-awesome-icon icon="rocket" class="me-1" />
@@ -40,7 +40,7 @@
                         {{ $t("restartStack") }}
                     </button>
 
-                    <button v-if="!isEditMode" class="btn btn-normal" :disabled="processing" @click="updateStack">
+                    <button v-if="!isEditMode && !$root.isCompact" class="btn btn-normal" :disabled="processing" @click="updateStack">
                         <font-awesome-icon icon="cloud-arrow-down" class="me-1" />
                         {{ $t("updateStack") }}
                     </button>
@@ -51,15 +51,23 @@
                     </button>
 
                     <BDropdown right text="" variant="normal">
+                        <BDropdownItem v-if="$root.isCompact && !isEditMode" @click="updateStack">
+                            <font-awesome-icon icon="cloud-arrow-down" class="me-1" />
+                            {{ $t("updateStack") }}
+                        </BDropdownItem>
                         <BDropdownItem @click="downStack">
                             <font-awesome-icon icon="stop" class="me-1" />
                             {{ $t("downStack") }}
+                        </BDropdownItem>
+                        <BDropdownItem v-if="$root.isCompact && !isEditMode" class="text-danger" @click="showDeleteDialog = true">
+                            <font-awesome-icon icon="trash" class="me-1" />
+                            {{ $t("deleteStack") }}
                         </BDropdownItem>
                     </BDropdown>
                 </div>
 
                 <button v-if="isEditMode && !isAdd" class="btn btn-normal" :disabled="processing" @click="discardStack">{{ $t("discardStack") }}</button>
-                <button v-if="!isEditMode" class="btn btn-danger" :disabled="processing" @click="showDeleteDialog = !showDeleteDialog">
+                <button v-if="!isEditMode && !$root.isCompact" class="btn btn-danger" :disabled="processing" @click="showDeleteDialog = !showDeleteDialog">
                     <font-awesome-icon icon="trash" class="me-1" />
                     {{ $t("deleteStack") }}
                 </button>
@@ -85,8 +93,14 @@
                 ></Terminal>
             </transition>
 
+            <div v-if="$root.isCompact && stack.isManagedByDockge" class="compact-compose-tabs mb-3">
+                <button class="btn" :class="compactTab === 'containers' ? 'btn-primary' : 'btn-normal'" @click="compactTab = 'containers'">{{ $tc("container", 2) }}</button>
+                <button class="btn" :class="compactTab === 'compose' ? 'btn-primary' : 'btn-normal'" @click="compactTab = 'compose'">Compose</button>
+                <button v-if="isEditMode" class="btn" :class="compactTab === 'environment' ? 'btn-primary' : 'btn-normal'" @click="compactTab = 'environment'">{{ $t("environmentAndNetworks") }}</button>
+            </div>
+
             <div v-if="stack.isManagedByDockge" class="row stack-content">
-                <div class="col-lg-6 containers-column">
+                <div v-show="!$root.isCompact || compactTab === 'containers'" class="col-lg-6 containers-column">
                     <!-- General -->
                     <div v-if="isAdd">
                         <h4 class="mb-3">{{ $t("general") }}</h4>
@@ -157,11 +171,11 @@
                         </div>
                     </div>
                 </div>
-                <div class="col-lg-6 compose-column">
-                    <h4 class="mb-3">{{ stack.composeFileName }}</h4>
+                <div v-show="!$root.isCompact || compactTab !== 'containers'" class="col-lg-6 compose-column">
+                    <h4 v-show="!$root.isCompact || compactTab === 'compose'" class="mb-3">{{ stack.composeFileName }}</h4>
 
                     <!-- YAML editor -->
-                    <div class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
+                    <div v-show="!$root.isCompact || compactTab === 'compose'" class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
                         <code-mirror
                             ref="editor"
                             v-model="stack.composeYAML"
@@ -175,12 +189,12 @@
                             @change="yamlCodeChange"
                         />
                     </div>
-                    <div v-if="isEditMode" class="mb-3">
+                    <div v-if="isEditMode" v-show="!$root.isCompact || compactTab === 'compose'" class="mb-3">
                         {{ yamlError }}
                     </div>
 
                     <!-- ENV editor -->
-                    <div v-if="isEditMode">
+                    <div v-if="isEditMode" v-show="!$root.isCompact || compactTab === 'environment'">
                         <h4 class="mb-3">.env</h4>
                         <div class="shadow-box mb-3 editor-box" :class="{'edit-mode' : isEditMode}">
                             <code-mirror
@@ -198,7 +212,7 @@
                         </div>
                     </div>
 
-                    <div v-if="isEditMode">
+                    <div v-if="isEditMode" v-show="!$root.isCompact || compactTab === 'environment'">
                         <!-- Volumes -->
                         <div v-if="false">
                             <h4 class="mb-3">{{ $tc("volume", 2) }}</h4>
@@ -328,6 +342,7 @@ export default {
             submitted: false,
             showDeleteDialog: false,
             newContainerName: "",
+            compactTab: "containers",
             stopServiceStatusTimeout: false,
             stopDockerStatsTimeout: false,
             availablePageHeight: 0,
@@ -874,6 +889,50 @@ export default {
 .agent-name {
     font-size: 13px;
     color: $dark-font-color3;
+}
+
+.compact-compose-tabs {
+    display: flex;
+    overflow-x: auto;
+    gap: 0.5rem;
+    padding-bottom: 0.25rem;
+}
+
+.compact-compose-tabs .btn {
+    flex: 1 0 auto;
+}
+
+@media (max-width: 991.98px) {
+    .stack-actions {
+        position: sticky;
+        z-index: 100;
+        bottom: calc(60px + env(safe-area-inset-bottom));
+        display: flex;
+        overflow-x: auto;
+        gap: 0.5rem;
+        margin-inline: -12px;
+        padding: 0.65rem 12px;
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(10px);
+
+        .dark & {
+            background: rgba($dark-bg, 0.94);
+        }
+    }
+
+    .stack-actions > .btn-group {
+        display: flex;
+        flex: 0 0 auto;
+    }
+
+    .stack-actions .btn {
+        min-height: 44px;
+        white-space: nowrap;
+    }
+
+    .editor-box :deep(.cm-editor) {
+        min-height: 52dvh;
+    }
 }
 
 @media (min-width: 992px) {
