@@ -1,9 +1,9 @@
 <template>
     <div class="terminal-shell shadow-box">
-        <div v-if="$root.isCompact && mode !== 'displayOnly'" class="terminal-touch-toolbar">
+        <div v-if="showToolbar" class="terminal-toolbar">
             <button class="btn btn-sm btn-normal" @click="focus"><font-awesome-icon icon="terminal" /> {{ $t("focusTerminal") }}</button>
-            <button class="btn btn-sm btn-normal" @click="copySelection"><font-awesome-icon icon="copy" /> {{ $t("copySelection") }}</button>
-            <button class="btn btn-sm btn-normal" @click="handlePaste"><font-awesome-icon icon="paste" /> {{ $t("paste") }}</button>
+            <button class="btn btn-sm btn-normal" :disabled="!hasSelection" @click="copySelection"><font-awesome-icon icon="copy" /> {{ $t("copySelection") }}</button>
+            <button v-if="acceptsInput" class="btn btn-sm btn-normal" @click="handlePaste"><font-awesome-icon icon="paste" /> {{ $t("paste") }}</button>
             <button class="btn btn-sm btn-normal" @click="clear"><font-awesome-icon icon="trash" /> {{ $t("clearDisplay") }}</button>
         </div>
         <div v-pre ref="terminal" class="main-terminal"></div>
@@ -72,6 +72,11 @@ export default {
             default: TERMINAL_COLS,
         },
 
+        showToolbar: {
+            type: Boolean,
+            default: true,
+        },
+
         // Mode
         // displayOnly: Only display terminal output
         // mainTerminal: Free input and output for the Dockge console
@@ -89,6 +94,11 @@ export default {
             followOutput: this.autoFollow,
             hasSelection: false,
         };
+    },
+    computed: {
+        acceptsInput() {
+            return this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer";
+        },
     },
     created() {
 
@@ -108,7 +118,9 @@ export default {
             rows: this.rows,
         });
 
-        if (this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer") {
+        this.terminal.attachCustomKeyEventHandler(this.handleTerminalKeyEvent);
+
+        if (this.acceptsInput) {
             this.interactiveTerminalConfig();
         }
 
@@ -211,17 +223,27 @@ export default {
         },
 
         interactiveTerminalConfig() {
-            this.terminal.attachCustomKeyEventHandler(event => {
-                if (event.type === "keydown" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
-                    this.handlePaste();
-                    return false;
-                }
-                return true;
-            });
-
             this.terminal.onData(data => {
                 this.sendTerminalInput(data);
             });
+        },
+
+        handleTerminalKeyEvent(event) {
+            if (event.type !== "keydown") {
+                return true;
+            }
+
+            const key = event.key.toLowerCase();
+            const shortcut = event.ctrlKey || event.metaKey;
+            if (shortcut && key === "c" && this.terminal.hasSelection()) {
+                this.copySelection();
+                return false;
+            }
+            if (this.acceptsInput && shortcut && key === "v") {
+                this.handlePaste();
+                return false;
+            }
+            return true;
         },
 
         /**
@@ -308,7 +330,7 @@ export default {
          * Paste text into the terminal based on current mode
          */
         pasteText(text) {
-            if (this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer") {
+            if (this.acceptsInput) {
                 // Let xterm encode bracketed paste mode before forwarding the raw data.
                 this.terminal.paste(text);
             }
@@ -318,11 +340,11 @@ export default {
          * Handle right-click context menu for paste operation
          */
         handleContextMenu(event) {
-            // Prevent default context menu
-            event.preventDefault();
-
-            // Only handle paste for modes that support input
-            if (this.mode === "mainTerminal" || this.mode === "interactive" || this.mode === "interactiveContainer") {
+            if (this.terminal.hasSelection()) {
+                event.preventDefault();
+                this.copySelection();
+            } else if (this.acceptsInput) {
+                event.preventDefault();
                 this.handlePaste();
             }
         },
@@ -341,10 +363,22 @@ export default {
          */
         async copyToClipboard(text) {
             try {
+                if (!navigator.clipboard?.writeText) {
+                    throw new Error("Clipboard API unavailable");
+                }
                 await navigator.clipboard.writeText(text);
-                console.debug("Text copied to clipboard:", text);
             } catch (error) {
-                console.error("Failed to copy to clipboard:", error);
+                const textarea = document.createElement("textarea");
+                textarea.value = text;
+                textarea.style.position = "fixed";
+                textarea.style.opacity = "0";
+                document.body.appendChild(textarea);
+                textarea.select();
+                const copied = document.execCommand("copy");
+                textarea.remove();
+                if (!copied) {
+                    console.error("Failed to copy to clipboard:", error);
+                }
             }
         },
     }
@@ -363,7 +397,7 @@ export default {
     flex-direction: column;
 }
 
-.terminal-touch-toolbar {
+.terminal-toolbar {
     display: flex;
     flex: 0 0 auto;
     overflow-x: auto;
@@ -372,10 +406,15 @@ export default {
     background: #161b22;
 }
 
-.terminal-touch-toolbar .btn {
+.terminal-toolbar .btn {
     flex: 0 0 auto;
-    min-height: 44px;
     padding-inline: 0.75rem;
+}
+
+@media (max-width: 991.98px) {
+    .terminal-toolbar .btn {
+        min-height: 44px;
+    }
 }
 </style>
 

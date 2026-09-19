@@ -141,6 +141,13 @@ import { languages } from "@codemirror/language-data";
 import { markRaw } from "vue";
 import FileTextEditor from "../components/FileTextEditor.vue";
 
+function getRouteDirectory(value) {
+    if (Array.isArray(value)) {
+        value = value[0];
+    }
+    return typeof value === "string" ? value.replace(/^\/+|\/+$/g, "") : "";
+}
+
 export default {
     components: { BDropdown,
         BDropdownItem,
@@ -155,7 +162,7 @@ export default {
                 chunkSize: 256 * 1024 },
             loadingInfo: true,
             busy: false,
-            currentPath: "",
+            currentPath: getRouteDirectory(this.$route.query.path),
             entries: [],
             total: 0,
             offset: 0,
@@ -204,9 +211,21 @@ export default {
         },
     },
     watch: {
-        "$route.params.endpoint"(value) {
-            this.selectedEndpoint = value || "";
-            this.loadInfo();
+        $route(to) {
+            const endpoint = to.params.endpoint || "";
+            const path = getRouteDirectory(to.query.path);
+            const endpointChanged = endpoint !== this.selectedEndpoint;
+            const pathChanged = path !== this.currentPath;
+
+            this.selectedEndpoint = endpoint;
+            this.currentPath = path;
+            this.offset = 0;
+
+            if (endpointChanged) {
+                this.loadInfo();
+            } else if (pathChanged && this.info.enabled) {
+                this.refresh();
+            }
         },
     },
     mounted() {
@@ -229,7 +248,6 @@ export default {
                 return;
             }
             this.info = result;
-            this.currentPath = "";
             this.offset = 0;
             if (result.enabled) {
                 await this.refresh();
@@ -253,9 +271,21 @@ export default {
             }
         },
         openDirectory(path) {
-            this.currentPath = path;
-            this.offset = 0;
-            this.refresh();
+            const directory = getRouteDirectory(path);
+            if (directory === this.currentPath) {
+                this.offset = 0;
+                this.refresh();
+                return;
+            }
+
+            const query = { ...this.$route.query };
+            if (directory) {
+                query.path = directory;
+            } else {
+                delete query.path;
+            }
+            this.$router.push({ path: this.$route.path,
+                query });
         },
         openEntry(entry) {
             if (entry.type === "directory") {

@@ -140,6 +140,7 @@
                             :name="logTerminalName"
                             :endpoint="endpoint"
                             :auto-follow="true"
+                            :show-toolbar="false"
                             @ready="joinLogs"
                             @follow-change="followLogs = $event"
                             @selection-change="hasLogSelection = $event"
