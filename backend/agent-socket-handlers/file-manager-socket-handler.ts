@@ -38,6 +38,7 @@ interface FileManagerRequest {
     force?: boolean;
     transferId?: string;
     data?: unknown;
+    fileId?: unknown;
 }
 
 export class FileManagerSocketHandler extends AgentSocketHandler {
@@ -71,13 +72,16 @@ export class FileManagerSocketHandler extends AgentSocketHandler {
                 if (!(error instanceof FileManagerError)) {
                     log.error("file-manager", error);
                 }
+                const code = fileManagerErrorCode(error);
                 if (auditEntry) {
-                    audit(auditEntry.operation, auditPaths, "failure", error instanceof FileManagerError ? error.code : "FILE_MANAGER_ERROR");
+                    audit(auditEntry.operation, auditPaths, "failure", code);
                 }
+                const messageKey = fileManagerErrorMessage(code);
                 callback({
                     ok: false,
-                    code: error instanceof FileManagerError ? error.code : "FILE_MANAGER_ERROR",
-                    msg: error instanceof FileManagerError ? error.message : "File manager operation failed.",
+                    code,
+                    msg: messageKey || (error instanceof FileManagerError ? error.message : "File manager operation failed."),
+                    msgi18n: Boolean(messageKey),
                 });
             }
         };
@@ -128,6 +132,7 @@ export class FileManagerSocketHandler extends AgentSocketHandler {
         }, { operation: "delete",
             paths: [ request?.path ] }));
         agentSocket.on("fileReadText", async (request : FileManagerRequest, callback) => respond(callback, async () => manager().readText(request?.path)));
+        agentSocket.on("fileLogRead", async (request : FileManagerRequest, callback) => respond(callback, async () => manager().readLog(request?.path, request?.offset, request?.fileId)));
         agentSocket.on("fileSaveText", async (request : FileManagerRequest, callback) => respond(callback, async () => {
             return { ...await manager().saveText(request?.path, request?.content, request?.revision, request?.force === true),
                 msg: "fileSavedSuccessfully",
@@ -248,6 +253,34 @@ export class FileManagerSocketHandler extends AgentSocketHandler {
             downloads.clear();
         });
     }
+}
+
+function fileManagerErrorMessage(code : string) {
+    return ({
+        TEXT_TOO_LARGE: "fileErrorTextTooLarge",
+        NOT_UTF8: "fileErrorNotUtf8",
+        NOT_TEXT: "fileErrorNotText",
+        NOT_FOUND: "fileErrorNotFound",
+        NOT_FILE: "fileErrorNotFile",
+        SYMLINK_NOT_ALLOWED: "fileErrorSymlink",
+        TRANSFER_CHANGED: "fileErrorChanged",
+        PERMISSION_DENIED: "fileErrorPermission",
+        FILE_MANAGER_ERROR: "fileErrorGeneric",
+    } as Record<string, string>)[code];
+}
+
+function fileManagerErrorCode(error : unknown) {
+    if (error instanceof FileManagerError) {
+        return error.code;
+    }
+    const systemCode = (error as NodeJS.ErrnoException)?.code;
+    if (systemCode === "ENOENT") {
+        return "NOT_FOUND";
+    }
+    if (systemCode === "EACCES" || systemCode === "EPERM") {
+        return "PERMISSION_DENIED";
+    }
+    return "FILE_MANAGER_ERROR";
 }
 
 async function cleanupUpload(id : unknown, uploads : Map<string, UploadSession>) {

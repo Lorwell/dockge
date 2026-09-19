@@ -1,6 +1,6 @@
 services:
   dockge:
-    image: docker.io/moailaozi/dockge:1.8.1
+    image: docker.io/moailaozi/dockge:1.8.2
     restart: unless-stopped
     ports:
       # Host Port : Container Port

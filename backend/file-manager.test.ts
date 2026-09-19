@@ -2,7 +2,14 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { FileManager, FileManagerError } from "./file-manager";
+import {
+    FILE_MANAGER_CHUNK_SIZE,
+    FILE_MANAGER_LOG_BACKLOG_LIMIT,
+    FILE_MANAGER_LOG_TAIL_SIZE,
+    FILE_MANAGER_TEXT_LIMIT,
+    FileManager,
+    FileManagerError
+} from "./file-manager";
 import { FileManagerSocketHandler } from "./agent-socket-handlers/file-manager-socket-handler";
 import { AgentSocket } from "../common/agent-socket";
 import type { DockgeSocket } from "./util-server";
@@ -72,6 +79,68 @@ test("detects text revision conflicts and invalid UTF-8", async () => {
 
     await fs.writeFile(path.join(testRoot, "document.pdf"), "%PDF-1.7\nASCII content that is still a binary document");
     await assert.rejects(manager.readText("document.pdf"), hasCode("NOT_TEXT"));
+});
+
+test("enforces the exact online text editing limit", async () => {
+    await fs.writeFile(path.join(testRoot, "text-limit.txt"), Buffer.alloc(FILE_MANAGER_TEXT_LIMIT, 0x61));
+    assert.equal((await manager.readText("text-limit.txt")).content.length, FILE_MANAGER_TEXT_LIMIT);
+
+    await fs.writeFile(path.join(testRoot, "text-too-large.txt"), Buffer.alloc(FILE_MANAGER_TEXT_LIMIT + 1, 0x61));
+    await assert.rejects(manager.readText("text-too-large.txt"), hasCode("TEXT_TOO_LARGE"));
+    await assert.rejects(manager.saveText("text-limit.txt", "a".repeat(FILE_MANAGER_TEXT_LIMIT + 1), "ignored"), hasCode("TEXT_TOO_LARGE"));
+});
+
+test("tails, follows, skips backlog, truncates and rotates log files", async () => {
+    const logPath = path.join(testRoot, "application.log");
+    const initialContent = "a".repeat(FILE_MANAGER_LOG_TAIL_SIZE + 12345);
+    await fs.writeFile(logPath, initialContent);
+
+    const first = await manager.readLog("application.log");
+    assert.equal(first.reset, true);
+    assert.equal(first.offset, initialContent.length - FILE_MANAGER_LOG_TAIL_SIZE);
+    assert.equal(first.content.length, FILE_MANAGER_CHUNK_SIZE);
+    assert.equal(first.hasMore, true);
+
+    const second = await manager.readLog("application.log", first.nextOffset, first.fileId);
+    assert.equal(second.content.length, FILE_MANAGER_CHUNK_SIZE);
+    assert.equal(second.nextOffset, initialContent.length);
+    assert.equal(second.hasMore, false);
+
+    await fs.appendFile(logPath, "\nnew content");
+    const appended = await manager.readLog("application.log", second.nextOffset, second.fileId);
+    assert.equal(appended.content, "\nnew content");
+    assert.equal(appended.reset, false);
+
+    const previousEnd = appended.nextOffset;
+    await fs.appendFile(logPath, "b".repeat(FILE_MANAGER_LOG_BACKLOG_LIMIT + 1));
+    const skipped = await manager.readLog("application.log", previousEnd, appended.fileId);
+    assert.equal(skipped.skippedBytes, FILE_MANAGER_LOG_BACKLOG_LIMIT + 1 - FILE_MANAGER_LOG_TAIL_SIZE);
+    assert.equal(skipped.offset, skipped.size - FILE_MANAGER_LOG_TAIL_SIZE);
+
+    await fs.writeFile(logPath, "truncated\n");
+    const truncated = await manager.readLog("application.log", skipped.nextOffset, skipped.fileId);
+    assert.equal(truncated.reset, true);
+    assert.equal(truncated.content, "truncated\n");
+
+    await fs.rename(logPath, path.join(testRoot, "application.log.1"));
+    await fs.writeFile(logPath, "rotated\n");
+    const rotated = await manager.readLog("application.log", truncated.nextOffset, truncated.fileId);
+    assert.equal(rotated.reset, true);
+    assert.equal(rotated.content, "rotated\n");
+    assert.notEqual(rotated.fileId, truncated.fileId);
+});
+
+test("keeps UTF-8 characters intact and rejects non-text log content", async () => {
+    await fs.writeFile(path.join(testRoot, "unicode.log"), `${"a".repeat(FILE_MANAGER_CHUNK_SIZE - 1)}你\n`);
+    const first = await manager.readLog("unicode.log");
+    assert.equal(first.content, "a".repeat(FILE_MANAGER_CHUNK_SIZE - 1));
+    const second = await manager.readLog("unicode.log", first.nextOffset, first.fileId);
+    assert.equal(second.content, "你\n");
+
+    await fs.writeFile(path.join(testRoot, "invalid.log"), Buffer.from([ 0xff ]));
+    await assert.rejects(manager.readLog("invalid.log"), hasCode("NOT_UTF8"));
+    await fs.writeFile(path.join(testRoot, "binary.log"), Buffer.from([ 0x00, 0x01 ]));
+    await assert.rejects(manager.readLog("binary.log"), hasCode("NOT_TEXT"));
 });
 
 test("enforces the configured transfer limit", async () => {
@@ -148,6 +217,12 @@ test("validates sequential upload and download chunks through the agent API", as
     assert.equal(downloadChunk.done, true);
     assert.equal((await callAgent(agentSocket, "fileDownloadFinish", { transferId: downloadStart.transferId })).ok, true);
 
+    const logRead = await callAgent(agentSocket, "fileLogRead", { path: "chunked.txt" });
+    assert.equal(logRead.ok, true);
+    assert.equal(logRead.content, "abc");
+    assert.equal(logRead.nextOffset, 3);
+    assert.equal(typeof logRead.fileId, "string");
+
     const pendingUpload = await callAgent(agentSocket, "fileUploadStart", { path: "pending.txt",
         size: 3 });
     await callAgent(agentSocket, "fileUploadChunk", { transferId: pendingUpload.transferId,
@@ -174,6 +249,7 @@ test("does not traverse symbolic links", async (context) => {
     }
 
     await assert.rejects(manager.list("escape"), hasCode("SYMLINK_NOT_ALLOWED"));
+    await assert.rejects(manager.readLog("escape/sentinel.txt"), hasCode("SYMLINK_NOT_ALLOWED"));
     await manager.remove("escape", true);
     assert.equal(await fs.readFile(path.join(outside, "sentinel.txt"), "utf-8"), "outside");
     await fs.rm(outside, { recursive: true,
@@ -196,6 +272,9 @@ interface AgentResponse {
     offset?: number;
     done?: boolean;
     data?: Uint8Array | ArrayBuffer;
+    content?: string;
+    nextOffset?: number;
+    fileId?: string;
 }
 
 function callAgent(agentSocket : AgentSocket, event : string, request : object) : Promise<AgentResponse> {

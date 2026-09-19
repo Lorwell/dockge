@@ -60,7 +60,24 @@
                                     <td>{{ $t(`fileType.${entry.type}`) }}</td>
                                     <td>{{ entry.type === "file" ? formatSize(entry.size) : "—" }}</td>
                                     <td>{{ formatDate(entry.modifiedAt) }}</td>
-                                    <td><div class="row-actions"><button v-if="entry.type === 'file'" class="btn btn-sm btn-normal" @click="download(entry)"><font-awesome-icon icon="download" /> {{ $t("download") }}</button><button v-if="entry.type === 'file'" class="btn btn-sm btn-normal" @click="edit(entry)"><font-awesome-icon icon="file-pen" /> {{ $t("Edit") }}</button><button class="btn btn-sm btn-normal" @click="openRename(entry)">{{ $t("rename") }}</button><button class="btn btn-sm btn-normal" @click="openMove(entry)">{{ $t("move") }}</button><button class="btn btn-sm btn-danger" @click="openDelete(entry)"><font-awesome-icon icon="trash" /></button></div></td>
+                                    <td>
+                                        <div class="row-actions">
+                                            <button v-if="entry.type === 'file'" class="btn btn-sm btn-normal" @click="download(entry)"><font-awesome-icon icon="download" /> {{ $t("download") }}</button>
+                                            <button v-if="canView(entry)" class="btn btn-sm btn-normal" @click="openLog(entry)"><font-awesome-icon icon="eye" /> {{ $t(isLogEntry(entry) ? "viewLog" : "viewReadOnly") }}</button>
+                                            <button
+                                                v-if="entry.type === 'file' && !isKnownBinary(entry)"
+                                                class="btn btn-sm btn-normal"
+                                                :disabled="isEditTooLarge(entry)"
+                                                :title="isEditTooLarge(entry) ? $t('fileTooLargeToEdit') : $t('Edit')"
+                                                @click="edit(entry)"
+                                            >
+                                                <font-awesome-icon icon="file-pen" /> {{ $t("Edit") }}
+                                            </button>
+                                            <button class="btn btn-sm btn-normal" @click="openRename(entry)">{{ $t("rename") }}</button>
+                                            <button class="btn btn-sm btn-normal" @click="openMove(entry)">{{ $t("move") }}</button>
+                                            <button class="btn btn-sm btn-danger" @click="openDelete(entry)"><font-awesome-icon icon="trash" /></button>
+                                        </div>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -75,7 +92,16 @@
                             </button>
                             <div class="file-card-actions">
                                 <button v-if="entry.type === 'file'" class="btn btn-sm btn-normal" :aria-label="$t('download')" @click="download(entry)"><font-awesome-icon icon="download" /></button>
-                                <button v-if="entry.type === 'file'" class="btn btn-sm btn-normal" :aria-label="$t('Edit')" @click="edit(entry)"><font-awesome-icon icon="file-pen" /></button>
+                                <button v-if="canView(entry)" class="btn btn-sm btn-normal" :aria-label="$t(isLogEntry(entry) ? 'viewLog' : 'viewReadOnly')" @click="openLog(entry)"><font-awesome-icon icon="eye" /></button>
+                                <button
+                                    v-if="entry.type === 'file' && !isKnownBinary(entry)"
+                                    class="btn btn-sm btn-normal"
+                                    :disabled="isEditTooLarge(entry)"
+                                    :aria-label="isEditTooLarge(entry) ? $t('fileTooLargeToEdit') : $t('Edit')"
+                                    @click="edit(entry)"
+                                >
+                                    <font-awesome-icon icon="file-pen" />
+                                </button>
                                 <BDropdown right text="" size="sm" variant="normal">
                                     <BDropdownItem @click="openRename(entry)">{{ $t("rename") }}</BDropdownItem>
                                     <BDropdownItem @click="openMove(entry)">{{ $t("move") }}</BDropdownItem>
@@ -130,6 +156,43 @@
                     />
                 </div>
             </BModal>
+
+            <BModal
+                v-model="showLogViewer"
+                modal-class="file-log-modal"
+                :title="$t('logViewerTitle', { name: logEntry?.name || '' })"
+                size="xl"
+                hide-footer
+                @hidden="stopLogPolling"
+            >
+                <div class="log-viewer-toolbar">
+                    <button class="btn btn-sm btn-normal" :class="{ active: logFollow }" @click="toggleLogFollow">
+                        <font-awesome-icon :icon="logFollow ? 'pause' : 'play'" /> {{ $t(logFollow ? "pauseFollow" : "resumeFollow") }}
+                    </button>
+                    <button class="btn btn-sm btn-normal" :disabled="!logHasSelection" @click="copyLogSelection"><font-awesome-icon icon="copy" /> {{ $t("copySelection") }}</button>
+                    <button class="btn btn-sm btn-normal" @click="clearLogDisplay"><font-awesome-icon icon="trash" /> {{ $t("clearDisplay") }}</button>
+                    <button class="btn btn-sm btn-normal" :disabled="logLoading" @click="reloadLog"><font-awesome-icon icon="arrows-rotate" /> {{ $t("reloadLog") }}</button>
+                    <button v-if="logEntry" class="btn btn-sm btn-normal" :disabled="busy" @click="download(logEntry)"><font-awesome-icon icon="download" /> {{ $t("download") }}</button>
+                    <button v-if="logHasNewContent && !logFollow" class="btn btn-sm btn-primary ms-auto" @click="resumeLogFollow">{{ $t("newLogContent") }}</button>
+                    <span v-else-if="logLoading" class="log-viewer-status ms-auto">{{ $t("loading") }}</span>
+                </div>
+                <div v-if="logNotice" class="alert alert-info py-2 mb-2">{{ logNotice }}</div>
+                <div v-if="logError" class="alert alert-danger py-2 mb-2">
+                    <span>{{ logError }}</span>
+                    <button class="btn btn-sm btn-danger ms-2" @click="reloadLog">{{ $t("retry") }}</button>
+                </div>
+                <div class="log-viewer-body">
+                    <FileLogViewer
+                        v-if="showLogViewer"
+                        :key="logViewerInstance"
+                        ref="logViewer"
+                        :dark="$root.isDark"
+                        :follow="logFollow"
+                        @follow-change="handleLogFollowChange"
+                        @selection-change="logHasSelection = $event"
+                    />
+                </div>
+            </BModal>
         </div>
     </transition>
 </template>
@@ -139,6 +202,8 @@ import { BDropdown, BDropdownItem, BModal } from "bootstrap-vue-next";
 import { LanguageDescription } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { markRaw } from "vue";
+import { isKnownBinaryFileName, isLogFileName } from "../../../common/file-types";
+import FileLogViewer from "../components/FileLogViewer.vue";
 import FileTextEditor from "../components/FileTextEditor.vue";
 
 function getRouteDirectory(value) {
@@ -152,6 +217,7 @@ export default {
     components: { BDropdown,
         BDropdownItem,
         BModal,
+        FileLogViewer,
         FileTextEditor },
     data() {
         return {
@@ -182,6 +248,20 @@ export default {
             showDelete: false,
             showEditor: false,
             editorSession: 0,
+            showLogViewer: false,
+            logViewerInstance: 0,
+            logSession: 0,
+            logTimer: null,
+            logReadingSession: null,
+            logLoading: false,
+            logFollow: true,
+            logHasSelection: false,
+            logHasNewContent: false,
+            logEntry: null,
+            logOffset: undefined,
+            logFileId: undefined,
+            logNotice: "",
+            logError: "",
             activeEntry: null,
             editor: { name: "",
                 path: "",
@@ -222,9 +302,17 @@ export default {
             this.offset = 0;
 
             if (endpointChanged) {
+                this.showEditor = false;
+                this.showLogViewer = false;
+                this.stopLogPolling();
                 this.loadInfo();
             } else if (pathChanged && this.info.enabled) {
                 this.refresh();
+            }
+        },
+        showLogViewer(value) {
+            if (!value) {
+                this.stopLogPolling();
             }
         },
     },
@@ -233,6 +321,7 @@ export default {
     },
     beforeUnmount() {
         this.cancelTransfer();
+        this.stopLogPolling();
     },
     methods: {
         emit(event, request = {}) {
@@ -291,8 +380,27 @@ export default {
             if (entry.type === "directory") {
                 this.openDirectory(entry.path);
             } else if (entry.type === "file") {
-                this.edit(entry);
+                if (this.isKnownBinary(entry)) {
+                    this.$root.toastRes({ ok: false,
+                        msg: this.$t("binaryPreviewUnsupported") });
+                } else if (this.isLogEntry(entry) || this.isEditTooLarge(entry)) {
+                    this.openLog(entry);
+                } else {
+                    this.edit(entry);
+                }
             }
+        },
+        isKnownBinary(entry) {
+            return entry.type === "file" && isKnownBinaryFileName(entry.name);
+        },
+        isLogEntry(entry) {
+            return entry.type === "file" && isLogFileName(entry.name);
+        },
+        isEditTooLarge(entry) {
+            return entry.type === "file" && entry.size > this.info.textFileSize;
+        },
+        canView(entry) {
+            return entry.type === "file" && !this.isKnownBinary(entry);
         },
         joinPath(parent, name) {
             return [ parent, name ].filter(Boolean).join("/");
@@ -378,6 +486,14 @@ export default {
             }
         },
         async edit(entry) {
+            if (this.isKnownBinary(entry)) {
+                return this.$root.toastRes({ ok: false,
+                    msg: this.$t("binaryPreviewUnsupported") });
+            }
+            if (this.isEditTooLarge(entry)) {
+                return this.$root.toastRes({ ok: false,
+                    msg: this.$t("fileTooLargeToEdit") });
+            }
             this.busy = true;
             const result = await this.emit("fileReadText", { path: entry.path });
             if (!result.ok) {
@@ -422,6 +538,119 @@ export default {
             } else {
                 event?.preventDefault?.();
             }
+        },
+        async openLog(entry) {
+            if (!this.canView(entry)) {
+                return this.$root.toastRes({ ok: false,
+                    msg: this.$t("binaryPreviewUnsupported") });
+            }
+            this.stopLogPolling();
+            this.logEntry = entry;
+            this.logFollow = true;
+            this.logHasSelection = false;
+            this.logHasNewContent = false;
+            this.logNotice = "";
+            this.logError = "";
+            this.showLogViewer = true;
+            this.logViewerInstance++;
+            await this.$nextTick();
+            this.reloadLog();
+        },
+        reloadLog() {
+            if (!this.showLogViewer || !this.logEntry) {
+                return;
+            }
+            this.clearLogTimer();
+            const session = ++this.logSession;
+            this.logOffset = undefined;
+            this.logFileId = undefined;
+            this.logNotice = "";
+            this.logError = "";
+            this.logHasNewContent = false;
+            this.logLoading = true;
+            this.$refs.logViewer?.clear();
+            this.pollLog(session);
+        },
+        async pollLog(session) {
+            if (session !== this.logSession || !this.showLogViewer || !this.logEntry || this.logReadingSession === session) {
+                return;
+            }
+            this.logReadingSession = session;
+            const request = { path: this.logEntry.path };
+            if (this.logOffset !== undefined) {
+                request.offset = this.logOffset;
+                request.fileId = this.logFileId;
+            }
+            const result = await this.emit("fileLogRead", request);
+            if (this.logReadingSession === session) {
+                this.logReadingSession = null;
+            }
+            if (session !== this.logSession || !this.showLogViewer) {
+                return;
+            }
+            this.logLoading = false;
+            if (!result.ok) {
+                this.logError = this.fileErrorMessage(result);
+                return;
+            }
+
+            const wasFollowingExistingFile = this.logOffset !== undefined;
+            if (result.reset && wasFollowingExistingFile) {
+                this.logNotice = this.$t("logFileReset");
+            }
+            if (result.skippedBytes) {
+                this.logNotice = this.$t("logContentSkipped", { size: this.formatSize(result.skippedBytes) });
+            }
+            this.$refs.logViewer?.append(result.content, result.reset);
+            if (result.content && !this.logFollow) {
+                this.logHasNewContent = true;
+            }
+            this.logOffset = result.nextOffset;
+            this.logFileId = result.fileId;
+            this.queueLogPoll(result.hasMore ? 0 : 1000, session);
+        },
+        queueLogPoll(delay, session) {
+            this.clearLogTimer();
+            this.logTimer = window.setTimeout(() => this.pollLog(session), delay);
+        },
+        clearLogTimer() {
+            if (this.logTimer) {
+                window.clearTimeout(this.logTimer);
+                this.logTimer = null;
+            }
+        },
+        stopLogPolling() {
+            this.clearLogTimer();
+            this.logSession++;
+            this.logLoading = false;
+        },
+        toggleLogFollow() {
+            if (this.logFollow) {
+                this.logFollow = false;
+            } else {
+                this.resumeLogFollow();
+            }
+        },
+        resumeLogFollow() {
+            this.logFollow = true;
+            this.logHasNewContent = false;
+            this.$nextTick(() => this.$refs.logViewer?.scrollToEnd());
+        },
+        handleLogFollowChange(follow) {
+            this.logFollow = follow;
+        },
+        copyLogSelection() {
+            this.$refs.logViewer?.copySelection();
+        },
+        clearLogDisplay() {
+            this.$refs.logViewer?.clear();
+            this.logHasNewContent = false;
+        },
+        fileErrorMessage(result) {
+            if (result.msgi18n) {
+                return this.$t(result.msg);
+            }
+            return result.msg || this.$t("fileErrorGeneric");
         },
         selectFiles(event) {
             const files = [ ...event.target.files ];
@@ -584,11 +813,20 @@ export default {
 .text-editor { display: flex; overflow: hidden; flex: 1 1 auto; min-height: 0; border: 1px solid rgba(127,127,127,.3); border-radius: 0.4rem; font-family: 'JetBrains Mono', monospace; font-size: 14px; }
 .text-editor :deep(.file-text-editor), .text-editor :deep(.cm-editor) { width: 100%; height: 100%; min-height: 0; }
 .text-editor :deep(.cm-scroller) { overflow: auto; }
+.log-viewer-toolbar { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
+.log-viewer-toolbar .active { color: #fff; background: $primary; }
+.log-viewer-status { align-self: center; color: $dark-font-color3; }
+.log-viewer-body { display: flex; overflow: hidden; flex: 1 1 auto; min-height: 0; border: 1px solid rgba(127,127,127,.3); border-radius: 0.4rem; font-family: 'JetBrains Mono', monospace; font-size: 14px; }
 :global(.file-editor-modal) { overflow: hidden; }
 :global(.file-editor-modal .modal-dialog) { height: calc(100dvh - 3.5rem); }
 :global(.file-editor-modal .modal-content) { height: 100%; max-height: calc(100dvh - 3.5rem); border-radius: 0.5rem; }
 :global(.file-editor-modal .modal-header), :global(.file-editor-modal .modal-footer) { flex: 0 0 auto; }
 :global(.file-editor-modal .modal-body) { display: flex; overflow: hidden; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+:global(.file-log-modal) { overflow: hidden; }
+:global(.file-log-modal .modal-dialog) { height: calc(100dvh - 3.5rem); }
+:global(.file-log-modal .modal-content) { height: 100%; max-height: calc(100dvh - 3.5rem); border-radius: 0.5rem; }
+:global(.file-log-modal .modal-header) { flex: 0 0 auto; }
+:global(.file-log-modal .modal-body) { display: flex; overflow: hidden; flex: 1 1 auto; flex-direction: column; min-height: 0; }
 
 .files-page {
     .dark & .text-muted {
@@ -629,6 +867,10 @@ export default {
     .transfer-panel { bottom: calc(70px + env(safe-area-inset-bottom)); }
     :global(.file-editor-modal .modal-dialog) { width: 100%; max-width: none; height: 100dvh; margin: 0; }
     :global(.file-editor-modal .modal-content) { height: 100dvh; max-height: 100dvh; border-radius: 0; }
+    :global(.file-log-modal .modal-dialog) { width: 100%; max-width: none; height: 100dvh; margin: 0; }
+    :global(.file-log-modal .modal-content) { height: 100dvh; max-height: 100dvh; border-radius: 0; }
     .text-editor { font-size: 16px; }
+    .log-viewer-body { font-size: 16px; }
+    .log-viewer-toolbar .btn { min-height: 44px; }
 }
 </style>

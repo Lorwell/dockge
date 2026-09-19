@@ -1,16 +1,13 @@
 import fs, { promises as fsAsync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { isKnownBinaryFileName } from "../common/file-types";
 
 export const FILE_MANAGER_CHUNK_SIZE = 256 * 1024;
 export const FILE_MANAGER_TEXT_LIMIT = 1024 * 1024;
-
-const BINARY_FILE_EXTENSIONS = new Set([
-    "7z", "avi", "bin", "bmp", "bz2", "class", "db", "dll", "dmg", "doc", "docx", "eot", "exe",
-    "flac", "gif", "gz", "ico", "iso", "jar", "jpeg", "jpg", "m4a", "mkv", "mov", "mp3", "mp4",
-    "ogg", "otf", "pdf", "png", "ppt", "pptx", "rar", "so", "sqlite", "sqlite3", "tar", "tgz",
-    "tif", "tiff", "ttf", "wav", "webm", "webp", "woff", "woff2", "xls", "xlsx", "xz", "zip",
-]);
+export const FILE_MANAGER_LOG_TAIL_SIZE = 512 * 1024;
+export const FILE_MANAGER_LOG_BACKLOG_LIMIT = 2 * 1024 * 1024;
 
 export class FileManagerError extends Error {
     code : string;
@@ -277,7 +274,7 @@ export class FileManager {
         } catch {
             throw new FileManagerError("NOT_UTF8", "Only UTF-8 text files can be edited.");
         }
-        if (hasBinaryExtension(source.relative) || hasBinaryBytes(buffer)) {
+        if (isKnownBinaryFileName(source.relative) || hasBinaryBytes(buffer)) {
             throw new FileManagerError("NOT_TEXT", "Binary files cannot be edited as text.");
         }
         return { content,
@@ -309,6 +306,62 @@ export class FileManager {
             await fsAsync.rm(temporary, { force: true }).catch(() => {});
         }
         return { revision: this.hash(buffer) };
+    }
+
+    async readLog(input : unknown, offsetInput? : unknown, fileIdInput? : unknown) {
+        const source = await this.resolveExisting(input, false);
+        if (!source.stat.isFile()) {
+            throw new FileManagerError("NOT_FILE", "The selected path is not a regular file.");
+        }
+        if (isKnownBinaryFileName(source.relative)) {
+            throw new FileManagerError("NOT_TEXT", "Binary files cannot be viewed as text.");
+        }
+        if (offsetInput !== undefined && (!Number.isSafeInteger(offsetInput) || (offsetInput as number) < 0)) {
+            throw new FileManagerError("VALIDATION", "The log offset is invalid.");
+        }
+        if (fileIdInput !== undefined && typeof fileIdInput !== "string") {
+            throw new FileManagerError("VALIDATION", "The log file id is invalid.");
+        }
+
+        const realPath = await fsAsync.realpath(source.absolute);
+        this.assertInsideRoot(realPath);
+        const handle = await fsAsync.open(realPath, "r");
+        try {
+            const stat = await handle.stat();
+            if (!stat.isFile()) {
+                throw new FileManagerError("NOT_FILE", "The selected path is not a regular file.");
+            }
+
+            const size = stat.size;
+            const fileId = this.fileId(stat);
+            const requestedOffset = offsetInput as number | undefined;
+            let offset = requestedOffset ?? Math.max(0, size - FILE_MANAGER_LOG_TAIL_SIZE);
+            let reset = requestedOffset === undefined;
+            let skippedBytes = 0;
+
+            if (requestedOffset !== undefined && (fileIdInput !== fileId || size < requestedOffset)) {
+                offset = Math.max(0, size - FILE_MANAGER_LOG_TAIL_SIZE);
+                reset = true;
+            } else if (requestedOffset !== undefined && size - requestedOffset > FILE_MANAGER_LOG_BACKLOG_LIMIT) {
+                offset = Math.max(requestedOffset, size - FILE_MANAGER_LOG_TAIL_SIZE);
+                skippedBytes = offset - requestedOffset;
+            }
+
+            const chunk = await this.readUtf8Chunk(handle, offset, size);
+            return {
+                content: chunk.content,
+                offset: chunk.offset,
+                nextOffset: chunk.nextOffset,
+                size,
+                fileId,
+                reset,
+                hasMore: chunk.nextOffset < size,
+                modifiedAt: stat.mtimeMs,
+                ...(skippedBytes > 0 ? { skippedBytes } : {}),
+            };
+        } finally {
+            await handle.close();
+        }
     }
 
     async prepareDownload(input : unknown) {
@@ -388,11 +441,54 @@ export class FileManager {
     private hash(buffer : Uint8Array) {
         return createHash("sha256").update(buffer).digest("hex");
     }
-}
 
-function hasBinaryExtension(relative : string) {
-    const extension = path.extname(relative).slice(1).toLowerCase();
-    return BINARY_FILE_EXTENSIONS.has(extension);
+    private fileId(stat : fs.Stats) {
+        return `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`;
+    }
+
+    private async readUtf8Chunk(handle : FileHandle, requestedOffset : number, size : number) {
+        if (requestedOffset >= size) {
+            return { content: "",
+                offset: size,
+                nextOffset: size };
+        }
+
+        const length = Math.min(FILE_MANAGER_CHUNK_SIZE, size - requestedOffset);
+        const buffer = Buffer.alloc(length);
+        const { bytesRead } = await handle.read(buffer, 0, length, requestedOffset);
+        if (bytesRead === 0) {
+            throw new FileManagerError("TRANSFER_CHANGED", "The file changed while it was being read.");
+        }
+
+        const bytes = buffer.subarray(0, bytesRead);
+        const reachedEnd = requestedOffset + bytesRead >= size;
+        const maxLeadingTrim = Math.min(3, bytes.length - 1);
+        const maxTrailingTrim = reachedEnd ? 0 : Math.min(3, bytes.length - 1);
+        for (let leadingTrim = 0; leadingTrim <= maxLeadingTrim; leadingTrim++) {
+            for (let trailingTrim = 0; trailingTrim <= maxTrailingTrim; trailingTrim++) {
+                const end = bytes.length - trailingTrim;
+                if (end <= leadingTrim) {
+                    continue;
+                }
+                const candidate = bytes.subarray(leadingTrim, end);
+                try {
+                    const content = new TextDecoder("utf-8", { fatal: true }).decode(candidate);
+                    if (hasBinaryBytes(candidate)) {
+                        throw new FileManagerError("NOT_TEXT", "Binary files cannot be viewed as text.");
+                    }
+                    const offset = requestedOffset + leadingTrim;
+                    return { content,
+                        offset,
+                        nextOffset: offset + candidate.byteLength };
+                } catch (error) {
+                    if (error instanceof FileManagerError) {
+                        throw error;
+                    }
+                }
+            }
+        }
+        throw new FileManagerError("NOT_UTF8", "Only UTF-8 text files can be viewed.");
+    }
 }
 
 function hasBinaryBytes(buffer : Buffer) {
